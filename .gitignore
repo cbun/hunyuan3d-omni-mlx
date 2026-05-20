@@ -125,6 +125,7 @@ ipython_config.py
 cython_debug/
 
 # Model and inference artifacts
+gradio_outputs/
 omni_inference_results/
 omni_*_results/
 *_smoke_results/

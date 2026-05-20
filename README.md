@@ -142,6 +142,17 @@ python3 inference.py --device mlx --control_type bbox --max_items 1 \
   --num_inference_steps 5 --octree_resolution 128 --mc_mode mc
 ```
 
+### Gradio UI
+
+Launch the local UI:
+```bash
+python3 app.py
+```
+
+Then open `http://127.0.0.1:7860`. The app includes cached model loading,
+bbox/pose/point/voxel tabs, Apple Silicon MLX runtime controls, advanced
+generation settings, a GLB preview, and downloadable GLB/PLY outputs.
+
 ## Acknowledgements
 
 We would like to thank the contributors to

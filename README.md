@@ -47,10 +47,27 @@ It takes 10 GB VRAM for generation.
 
 ### Requirements
 We test our model with Python 3.10.
+
+CUDA/Linux:
 ```bash
 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
 ```
+
+Apple Silicon:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-apple-silicon.txt
+```
+
+The Apple Silicon path supports two backends. `--device mps` uses PyTorch's
+Metal/MPS backend. `--device mlx` uses native MLX for the DiT denoiser, Euler
+sampler, ShapeVAE latent decoder, and neural geometry queries, then uses the
+existing PyTorch/MPS conditioner and CPU marching-cubes mesh extraction.
+CUDA-only packages such as `cupy-cuda12x`, NVIDIA wheels, `deepspeed`, and
+FlashVDM are not used on macOS. Use `--mc_mode mc`; `--mc_mode dmc` requires the
+optional `diso` package.
 
 ## Usage
 
@@ -76,6 +93,28 @@ Please choose the appropriate control_type based on your requirements. For examp
 python3 inference.py --control_type point 
 python3 inference.py --control_type point --use_ema
 python3 inference.py --control_type point --flashvdm
+```
+
+On Apple Silicon:
+```bash
+python3 inference.py --device auto --control_type point --mc_mode mc
+python3 inference.py --device mlx --control_type bbox --mc_mode mc
+```
+
+`--device auto` selects CUDA, then Apple MPS, then CPU. `--device mlx` selects
+the compiled native MLX inference path on Apple Silicon. The native path supports
+the default Euler sampler and `--mc_mode mc`; use `--device mps` for the pure PyTorch/MPS fallback.
+For lower memory pressure while testing, reduce `--octree_resolution` and
+`--num_inference_steps`.
+
+`--native_mlx_dino` enables the experimental native MLX DINOv2 conditioner. It
+is available for parity testing, but the default `--device mlx` path keeps the
+PyTorch/MPS DINO conditioner because it is faster in current smoke benchmarks.
+
+Quick Apple Silicon smoke test:
+```bash
+python3 inference.py --device mlx --control_type bbox --max_items 1 \
+  --num_inference_steps 5 --octree_resolution 128 --mc_mode mc
 ```
 
 ## Acknowledgements

@@ -36,6 +36,10 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Local environments
+.venv/
+venv/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -120,5 +124,8 @@ ipython_config.py
 # Cython debug symbols
 cython_debug/
 
-omni_inference_results
-weights
+# Model and inference artifacts
+omni_inference_results/
+omni_*_results/
+*_smoke_results/
+weights/

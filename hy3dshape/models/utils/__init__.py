@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from functools import wraps
 
 import torch
@@ -46,17 +47,24 @@ class synchronize_timer:
     def __enter__(self):
         """Context manager entry: start timing."""
         if os.environ.get('HY3DGEN_DEBUG', '0') == '1':
-            self.start = torch.cuda.Event(enable_timing=True)
-            self.end = torch.cuda.Event(enable_timing=True)
-            self.start.record()
+            if torch.cuda.is_available():
+                self.start = torch.cuda.Event(enable_timing=True)
+                self.end = torch.cuda.Event(enable_timing=True)
+                self.start.record()
+            else:
+                self.start = time.perf_counter()
+                self.end = None
             return lambda: self.time
 
     def __exit__(self, exc_type, exc_value, exc_tb):
         """Context manager exit: stop timing and log results."""
         if os.environ.get('HY3DGEN_DEBUG', '0') == '1':
-            self.end.record()
-            torch.cuda.synchronize()
-            self.time = self.start.elapsed_time(self.end)
+            if torch.cuda.is_available():
+                self.end.record()
+                torch.cuda.synchronize()
+                self.time = self.start.elapsed_time(self.end)
+            else:
+                self.time = (time.perf_counter() - self.start) * 1000
             if self.name is not None:
                 logger.info(f'{self.name} takes {self.time} ms')
 

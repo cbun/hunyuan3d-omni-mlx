@@ -30,6 +30,7 @@ from hy3dshape.models.modules.checkpoint import checkpoint
 from hy3dshape.models.modules.distributions import DiagonalGaussianDistribution
 from hy3dshape.models.modules.embedder import FourierEmbedder, TriplaneLearnedFourierEmbedder
 from hy3dshape.models.modules.transformer_blocks import ResidualCrossAttentionBlock, Transformer
+from hy3dshape.models.utils.fps import fps as fps_fn
 
 
 def fps(
@@ -40,7 +41,6 @@ def fps(
     batch_size: Optional[int] = None,
     ptr: Optional[Union[Tensor, List[int]]] = None,
 ):
-    from torch_cluster import fps as fps_fn
     return fps_fn(src.float(), batch, ratio, random_start, batch_size, ptr)
 
 
@@ -532,4 +532,3 @@ class ShapeVAE(nn.Module):
         logits = self.query_geometry(volume_queries, latents)
 
         return logits, center_pos, posterior
-

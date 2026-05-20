@@ -271,7 +271,9 @@ class Diffuser(pl.LightningModule):
         pl.seed_everything(self.trainer.global_rank)
 
     def forward(self, batch):
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        autocast_device = self.device.type if self.device.type in {"cuda", "mps", "cpu"} else "cpu"
+        context_dtype = torch.bfloat16 if autocast_device == "cuda" else self.dtype
+        with torch.autocast(device_type=autocast_device, dtype=context_dtype):
             pose = batch.get("pose", None)
             bbox = batch.get("bbox", None)
             contexts = self.cond_stage_model(
@@ -280,11 +282,11 @@ class Diffuser(pl.LightningModule):
                 pose=pose, 
                 bbox=bbox
             )
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
+        with torch.autocast(device_type=autocast_device, dtype=self.dtype):
             with torch.no_grad():
                 latents = self.first_stage_model.encode(batch[self.first_stage_key], sample_posterior=True)
                 latents = self.z_scale_factor * latents
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.autocast(device_type=autocast_device, dtype=context_dtype):
             loss = self.transport.training_losses(self.model, latents, dict(contexts=contexts))["loss"].mean()
         return loss
 
@@ -343,7 +345,8 @@ class Diffuser(pl.LightningModule):
             generator = torch.Generator().manual_seed(self.pipeline_cfg.params.seed)
 
         with self.ema_scope("Sample"):
-            with torch.amp.autocast(device_type='cuda'):
+            autocast_device = self.device.type if self.device.type in {"cuda", "mps", "cpu"} else "cpu"
+            with torch.amp.autocast(device_type=autocast_device, dtype=self.dtype):
                 try:
                     self.pipeline.device = self.device
                     self.pipeline.dtype = self.dtype

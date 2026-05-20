@@ -24,6 +24,7 @@ from tqdm import tqdm
 from skimage import measure
 from einops import repeat
 import trimesh
+from hy3dshape.runtime import default_geometry_dtype
 try:
     from .extract_geometry_base import BaseGeometryExtractor
 except ImportError:
@@ -100,8 +101,9 @@ class VanillaGeometryExtractor(BaseGeometryExtractor):
             range(0, xyz_samples.shape[0], num_chunks),
             desc=f"MC Level {mc_level} Implicit Function:", disable=disable_tqdm, leave=False
         ):
-            queries = xyz_samples[start: start + num_chunks, :].to(self.device)
-            queries = queries.half()
+            queries = xyz_samples[start: start + num_chunks, :].to(
+                self.device, dtype=default_geometry_dtype(self.device)
+            )
             batch_queries = repeat(queries, "p c -> b p c", b=batch_size)
 
             logits = geometric_func(batch_queries)
@@ -137,7 +139,7 @@ class VanillaGeometryExtractor(BaseGeometryExtractor):
             
             return trimesh.Trimesh(vertices.astype(np.float32), np.ascontiguousarray(faces))
         except (ValueError, RuntimeError) as e:
-            traceback.print_exc()
+            print(f"Warning: marching cubes did not produce a valid surface: {e}")
             return trimesh.Trimesh()
 
     def extract_geometry_with_stats(
@@ -225,7 +227,7 @@ if __name__ == "__main__":
     start_time = time.time()
     mesh_v_f, has_surface = extract_geometry_vanilla(
         geometric_func=BaseGeometryExtractor.sphere_sdf,
-        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        device=None,
         bounds=(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0),
         octree_depth=7,
         mc_level=0,

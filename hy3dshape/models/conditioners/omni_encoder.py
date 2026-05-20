@@ -28,6 +28,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 from transformers import Dinov2Model
 from hy3dshape.models.utils.misc import instantiate_from_config
+from hy3dshape.models.utils.fps import fps as fps_fn
 
 def fps(
     src: torch.Tensor,
@@ -37,10 +38,7 @@ def fps(
     batch_size: Optional[int] = None,
     ptr: Optional[Union[Tensor, List[int]]] = None,
 ):
-    src = src.float()
-    from torch_cluster import fps as fps_fn
-    output = fps_fn(src, batch, ratio, random_start, batch_size, ptr)
-    return output
+    return fps_fn(src.float(), batch, ratio, random_start, batch_size, ptr)
 
 
 class PositionEmbeddingSine(nn.Module):
@@ -113,20 +111,26 @@ class DinoImageEncoder(nn.Module):
 
     def setup_transform(self, image_size):
         print(f"Image size: {image_size}")
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize(image_size, transforms.InterpolationMode.BILINEAR, antialias=True),
-                transforms.CenterCrop(image_size),  # crop a (224, 224) square
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225],
-                ),
-            ]
+        self.resize = transforms.Resize(image_size, transforms.InterpolationMode.BILINEAR, antialias=True)
+        # PyTorch does not implement antialiased bilinear tensor resize on MPS.
+        # Keep CUDA/CPU preprocessing unchanged, but use the native MPS kernel there.
+        self.resize_mps = transforms.Resize(image_size, transforms.InterpolationMode.BILINEAR, antialias=False)
+        self.center_crop = transforms.CenterCrop(image_size)  # crop a (224, 224) square
+        self.normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
         )
+        self.transform = transforms.Compose([self.resize, self.center_crop, self.normalize])
         self.size = image_size // 14
         self.patch_nums = (image_size // 14) ** 2
         if self.use_cls_token:
             self.patch_nums += 1
+
+    def preprocess(self, image):
+        resize = self.resize_mps if isinstance(image, torch.Tensor) and image.device.type == "mps" else self.resize
+        image = resize(image)
+        image = self.center_crop(image)
+        return self.normalize(image)
 
     def expand_mask_to_bbox(self, masks):
         bs = masks.shape[0]
@@ -145,7 +149,7 @@ class DinoImageEncoder(nn.Module):
             low, high = value_range
             image = (image - low) / (high - low)
 
-        inputs = self.transform(image)
+        inputs = self.preprocess(image)
         outputs = self.model(inputs)
 
         last_hidden_state = outputs.last_hidden_state
@@ -263,7 +267,7 @@ class DinoEncoder(nn.Module):
         if self.disable_drop:
             dino_mask = None
         else:
-            random_p = torch.rand(len(image), device='cuda')
+            random_p = torch.rand(len(image), device=image.device)
             dino_mask = random_p < self.drop_image_dino_rate
 
         dino_outputs = self.dino_image_encoder(image, dropout_mask=dino_mask)
@@ -299,7 +303,7 @@ class SingleImageEncoder(nn.Module):
         if self.disable_drop:
             dropout_mask = None
         else:
-            random_p = torch.rand(len(image), device='cuda')
+            random_p = torch.rand(len(image), device=image.device)
             dropout_mask = random_p < self.drop_ratio
 
         outputs = self.image_encoder(image, dropout_mask=dropout_mask, mask=mask)
@@ -430,7 +434,7 @@ class OmniEncoder(nn.Module):
         if self.disable_drop:
             dropout_mask = None
         else:
-            random_p = torch.rand(len(image), device='cuda')
+            random_p = torch.rand(len(image), device=image.device)
             dropout_mask = random_p < self.drop_ratio
 
         image_cond = self.image_encoder(image, dropout_mask=dropout_mask, mask=mask)['dino']['last_hidden_state']

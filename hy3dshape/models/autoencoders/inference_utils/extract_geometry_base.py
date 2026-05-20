@@ -23,6 +23,7 @@ import torch
 from typing import Callable, Tuple, List, Union, Optional
 import trimesh
 from abc import ABC, abstractmethod
+from hy3dshape.runtime import resolve_device
 
 
 class BaseGeometryExtractor(ABC):
@@ -35,7 +36,7 @@ class BaseGeometryExtractor(ABC):
         Args:
             device: 计算设备，如果为None则自动选择
         """
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = resolve_device(device)
         self._setup_pooling_operations()
     
     def _setup_pooling_operations(self):

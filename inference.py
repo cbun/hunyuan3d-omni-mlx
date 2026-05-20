@@ -18,13 +18,20 @@ and/or weights of this Model, which are made publicly available by Tencent in ac
 HUNYUAN 3D OMNI COMMUNITY LICENSE AGREEMENT.
 """
 
-# Load libgcc_s library to prevent runtime issues
-import ctypes
-libgcc_s = ctypes.CDLL('libgcc_s.so.1')
-
-# Set GPU device (can be overridden by command line arguments)
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import platform
+
+if platform.system() == "Darwin":
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+# Load libgcc_s on Linux to prevent runtime issues. This library is not present
+# on macOS, so keep it optional for Apple Silicon.
+if platform.system() == "Linux":
+    import ctypes
+    try:
+        ctypes.CDLL('libgcc_s.so.1')
+    except OSError:
+        pass
 
 # Ignore all warnings
 import warnings
@@ -43,6 +50,7 @@ from PIL import Image
 from hy3dshape.pipelines import Hunyuan3DOmniSiTFlowMatchingPipeline
 from hy3dshape.preprocessors import ImageProcessorV2
 from hy3dshape.postprocessors import FloaterRemover, DegenerateFaceRemover
+from hy3dshape.runtime import describe_backend, make_generator, resolve_device, resolve_dtype
 
 
 def save_ply_points(filename: str, points: np.ndarray) -> None:
@@ -100,13 +108,19 @@ def normalize_mesh(mesh: trimesh.Trimesh, scale: float = 0.9999) -> trimesh.Trim
     return mesh
 
 def postprocess(mesh, file_name, save_dir, sampled_point, image_file):
+    if mesh is None or len(getattr(mesh, "vertices", [])) == 0 or len(getattr(mesh, "faces", [])) == 0:
+        print(f"Warning: no mesh surface generated for {file_name}; saving point cloud and input image only.")
+        save_ply_points(os.path.join(save_dir, '%s.ply' % file_name), sampled_point.detach().cpu().numpy())
+        shutil.copy(image_file, os.path.join(save_dir, '%s.png' % file_name))
+        return False
     mesh = FloaterRemover()(mesh)
     mesh = DegenerateFaceRemover()(mesh)
     mesh.export(os.path.join(save_dir, '%s.glb' % (file_name)))
-    save_ply_points(os.path.join(save_dir, '%s.ply' % file_name), sampled_point.cpu().numpy())
+    save_ply_points(os.path.join(save_dir, '%s.ply' % file_name), sampled_point.detach().cpu().numpy())
     shutil.copy(image_file, os.path.join(save_dir, '%s.png' % file_name))
+    return True
 
-def infer_bbox(pipeline, data_json: str, save_dir: str) -> None:
+def infer_bbox(pipeline, data_json: str, save_dir: str, seed: int, inference_kwargs: dict, max_items: int = None) -> None:
     """
     Perform 3D generation with bounding box control.
     
@@ -138,7 +152,7 @@ def infer_bbox(pipeline, data_json: str, save_dir: str) -> None:
     image_files = data['image']
     bboxs = data['bbox']
     
-    total_files = len(image_files)
+    total_files = len(image_files) if max_items is None else min(len(image_files), max_items)
     os.makedirs(save_dir, exist_ok=True)
     print(f"Processing {total_files} images with bounding box control...")
 
@@ -161,11 +175,10 @@ def infer_bbox(pipeline, data_json: str, save_dir: str) -> None:
         result = pipeline(
             image=image_file,
             bbox=bbox,
-            num_inference_steps=50,      # Number of denoising steps
-            octree_resolution=512,       # 3D resolution for octree representation
             mc_level=0,                  # Marching cubes iso-level
             guidance_scale=4.5,          # Classifier-free guidance strength
-            generator=torch.Generator('cuda').manual_seed(1234),  # Fixed seed for reproducibility
+            generator=make_generator(pipeline.device, seed),
+            **inference_kwargs,
         )
         
         # Extract results
@@ -174,10 +187,6 @@ def infer_bbox(pipeline, data_json: str, save_dir: str) -> None:
         
         print(f"Generated mesh: {type(mesh)}")
         print(f"Mesh info: {mesh}")
-
-        # Optional post-processing (commented out by default)
-        mesh = FloaterRemover()(mesh)      # Remove floating geometry
-        mesh = DegenerateFaceRemover()(mesh)  # Remove degenerate faces
         
         # Generate output filename with bbox coordinates
         base_name = image_file.split("/")[-1].split('.')[0]
@@ -188,7 +197,7 @@ def infer_bbox(pipeline, data_json: str, save_dir: str) -> None:
         postprocess(mesh, file_name, save_dir, sampled_point, image_file)
 
 
-def infer_pose(pipeline, images: list, pose_dict: dict, save_dir: str) -> None:
+def infer_pose(pipeline, images: list, pose_dict: dict, save_dir: str, seed: int, inference_kwargs: dict, max_items: int = None) -> None:
     """
     Perform 3D generation with skeletal pose control.
     
@@ -219,7 +228,7 @@ def infer_pose(pipeline, images: list, pose_dict: dict, save_dir: str) -> None:
     """
     
     os.makedirs(save_dir, exist_ok=True)
-    total_files = len(images)
+    total_files = len(images) if max_items is None else min(len(images), max_items)
     
     for i in range(total_files):
         image_file = images[i]
@@ -230,17 +239,16 @@ def infer_pose(pipeline, images: list, pose_dict: dict, save_dir: str) -> None:
         for pose_key in pose_dict.keys():
             bone_path = pose_dict[pose_key]
 
-            bone_points = torch.from_numpy(np.loadtxt(bone_path)).to(pipeline.device).to(pipeline.dtype).unsqueeze(0)
+            bone_points = torch.from_numpy(np.loadtxt(bone_path).astype(np.float32)).to(device=pipeline.device, dtype=pipeline.dtype).unsqueeze(0)
             print(f"pose: {bone_points.shape}")
 
             result = pipeline(
                 image=image_file,
                 pose=bone_points,
-                num_inference_steps=50,
-                octree_resolution=512,
                 mc_level=0,
                 guidance_scale=4.5,
-                generator=torch.Generator('cuda').manual_seed(1234),
+                generator=make_generator(pipeline.device, seed),
+                **inference_kwargs,
             )
             mesh = result['shapes'][0][0]
             sampled_point = result['sampled_point'][0] 
@@ -248,7 +256,7 @@ def infer_pose(pipeline, images: list, pose_dict: dict, save_dir: str) -> None:
             postprocess(mesh, file_name, save_dir, sampled_point, image_file)
 
 
-def infer_point(pipeline, data_json: str, save_dir: str) -> None:
+def infer_point(pipeline, data_json: str, save_dir: str, seed: int, inference_kwargs: dict, max_items: int = None) -> None:
     """
     Perform 3D generation with point cloud control.
     
@@ -280,7 +288,7 @@ def infer_point(pipeline, data_json: str, save_dir: str) -> None:
     mesh_files = data['point']
 
     # Split data across multiple GPUs
-    total_files = len(image_files)  # Total number of files to process
+    total_files = len(image_files) if max_items is None else min(len(image_files), max_items)
     os.makedirs(save_dir, exist_ok=True)
 
     for i in range(total_files):
@@ -309,11 +317,10 @@ def infer_point(pipeline, data_json: str, save_dir: str) -> None:
         result = pipeline(
             image=image_file,
             point=surface,
-            num_inference_steps=50,
-            octree_resolution=512,
             mc_level=0,
             guidance_scale=4.5,
-            generator=torch.Generator('cuda').manual_seed(1234),
+            generator=make_generator(pipeline.device, seed),
+            **inference_kwargs,
         )
         mesh = result['shapes'][0][0]#[0]
         sampled_point = result['sampled_point'][0]#[0]
@@ -321,7 +328,7 @@ def infer_point(pipeline, data_json: str, save_dir: str) -> None:
         file_name = image_file.split("/")[-1].split('.')[0]
         postprocess(mesh, file_name, save_dir, sampled_point, image_file)
 
-def infer_voxel(pipeline, data_json: str, save_dir: str) -> None:
+def infer_voxel(pipeline, data_json: str, save_dir: str, seed: int, inference_kwargs: dict, max_items: int = None) -> None:
     """
     Perform 3D generation with voxel control.
     
@@ -352,13 +359,12 @@ def infer_voxel(pipeline, data_json: str, save_dir: str) -> None:
         This function includes post-processing with FloaterRemover and DegenerateFaceRemover
         for cleaner output meshes.
     """
-    # torch.cuda.set_device(gpu_id)
     data = json.load(open(data_json))
     image_files = data['image']
     mesh_files= data['voxel']
 
     # Split data across multiple GPUs
-    total_files = len(image_files)  # Total number of files to process
+    total_files = len(image_files) if max_items is None else min(len(image_files), max_items)
 
     os.makedirs(save_dir, exist_ok=True)
 
@@ -390,11 +396,10 @@ def infer_voxel(pipeline, data_json: str, save_dir: str) -> None:
         result = pipeline(
             image=image_file,
             voxel=surface,
-            num_inference_steps=50,
-            octree_resolution=512,
             mc_level=0,
             guidance_scale=4.5,
-            generator=torch.Generator('cuda').manual_seed(1234),
+            generator=make_generator(pipeline.device, seed),
+            **inference_kwargs,
         )
         mesh = result['shapes'][0][0]#[0]
         # image = result['images'][0]
@@ -417,6 +422,24 @@ def get_args():
     parser.add_argument('--repo_id', type=str, default="tencent/Hunyuan3D-Omni", help='ModelID on HuggingFace')
     parser.add_argument('--use_ema', action='store_true', help='Use EMA model for inference')
     parser.add_argument('--flashvdm', action='store_true', help='Use FlashVDM for faster decoding')
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'mps', 'mlx', 'cpu'],
+                        help='Runtime device. Use mlx on Apple Silicon for native MLX denoising and ShapeVAE decoding with MPS conditioning.')
+    parser.add_argument('--dtype', type=str, default='auto', choices=['auto', 'fp16', 'bf16', 'fp32'],
+                        help='Model dtype. auto uses fp16 on CUDA/MPS and fp32 on CPU.')
+    parser.add_argument('--seed', type=int, default=1234, help='Random seed for reproducible sampling')
+    parser.add_argument('--num_inference_steps', type=int, default=50, help='Number of denoising steps')
+    parser.add_argument('--octree_resolution', type=int, default=512, help='3D octree extraction resolution')
+    parser.add_argument('--num_chunks', type=int, default=8000, help='Chunk size for geometry extraction')
+    parser.add_argument('--mc_mode', type=str, default='mc', choices=['mc', 'dmc'],
+                        help='Geometry extraction mode. Use mc on Apple Silicon; dmc requires optional diso support.')
+    parser.add_argument('--max_items', type=int, default=None,
+                        help='Optional smoke-test limit for the number of demo inputs to process')
+    parser.add_argument('--native_mlx_dino', action='store_true',
+                        help='Experimental: use native MLX DINOv2 conditioning with --device mlx.')
+    parser.add_argument('--offload_mlx_dino_after_encode', action='store_true',
+                        help='Experimental one-shot mode: release native MLX DINO weights after conditioning to reduce MLX memory pressure.')
+    parser.add_argument('--sparse_mlx_moe', action='store_true',
+                        help='Experimental: dispatch only selected MLX MoE experts instead of evaluating all experts.')
     args = parser.parse_args()
     return args
 
@@ -432,10 +455,32 @@ if __name__ == "__main__":
 
     # initial
     print(f"From Pretrained: {args.repo_id}")
+    device = resolve_device(args.device)
+    dtype = resolve_dtype(args.dtype, device)
+    if device.type == "cuda":
+        device = torch.device(f"cuda:{args.gpu_id}")
+    if device.type != "cuda" and args.flashvdm:
+        print("Warning: --flashvdm is a CUDA-oriented fast path; falling back to standard decoding on this backend.")
+        args.flashvdm = False
+    print(f"Runtime backend: {describe_backend(args.device if args.device == 'mlx' else device, dtype)}")
+
     pipeline = Hunyuan3DOmniSiTFlowMatchingPipeline.from_pretrained(
-        args.repo_id, 
-        fast_decode=args.flashvdm
+        args.repo_id,
+        variant='ema' if args.use_ema else None,
+        device=args.device if args.device == 'mlx' else device,
+        dtype=dtype,
+        fast_decode=args.flashvdm,
+        native_mlx_dino=args.native_mlx_dino,
+        offload_mlx_dino_after_encode=args.offload_mlx_dino_after_encode,
+        sparse_mlx_moe=args.sparse_mlx_moe,
     )
+    inference_kwargs = {
+        "num_inference_steps": args.num_inference_steps,
+        "octree_resolution": args.octree_resolution,
+        "num_chunks": args.num_chunks,
+        "mc_mode": args.mc_mode,
+        "fast_decode": args.flashvdm,
+    }
 
     # 1. Bounding Box Control Inference
     if args.control_type == "bbox":
@@ -443,7 +488,7 @@ if __name__ == "__main__":
         print("1. Running Bounding Box Control Inference...")
         bbox_data_path = "./demos/bbox/data.json"
         bbox_output_dir = os.path.join(args.save_dir, "3domni_bbox")
-        infer_bbox(pipeline, bbox_data_path, bbox_output_dir)
+        infer_bbox(pipeline, bbox_data_path, bbox_output_dir, args.seed, inference_kwargs, args.max_items)
         print("Finished Bounding Box Control Inference")
 
     # 2. Pose Control Inference
@@ -457,7 +502,7 @@ if __name__ == "__main__":
         }
         pose_images = glob.glob("./demos/pose/*.png")
         pose_output_dir = os.path.join(args.save_dir, "3domni_pose")
-        infer_pose(pipeline, pose_images, pose_configs, pose_output_dir)
+        infer_pose(pipeline, pose_images, pose_configs, pose_output_dir, args.seed, inference_kwargs, args.max_items)
         print("Finished Pose Control Inference")
 
     # 3. Point Cloud Control Inference
@@ -466,7 +511,7 @@ if __name__ == "__main__":
         print("3. Running Point Cloud Control Inference...")
         point_data_path = "./demos/point/data.json"
         point_output_dir = os.path.join(args.save_dir, "3domni_point")
-        infer_point(pipeline,  point_data_path, point_output_dir)
+        infer_point(pipeline,  point_data_path, point_output_dir, args.seed, inference_kwargs, args.max_items)
         print("Finished Point Cloud Control Inference")
 
     # 4. Voxel Control Inference
@@ -475,7 +520,7 @@ if __name__ == "__main__":
         print("4. Running Voxel Control Inference...")
         voxel_data_path = "./demos/voxel/data.json"
         voxel_output_dir = os.path.join(args.save_dir, "3domni_voxel")
-        infer_voxel(pipeline, voxel_data_path, voxel_output_dir)
+        infer_voxel(pipeline, voxel_data_path, voxel_output_dir, args.seed, inference_kwargs, args.max_items)
         print("Finished Voxel Control Inference")
     
     print("\n" + "=" * 80)

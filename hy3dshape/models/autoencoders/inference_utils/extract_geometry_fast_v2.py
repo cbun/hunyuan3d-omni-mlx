@@ -23,10 +23,10 @@ import numpy as np
 import torch
 import trimesh
 from skimage import measure
-import traceback
 from tqdm import tqdm
 from torch import nn
 from einops import repeat
+from hy3dshape.runtime import default_geometry_dtype
 
 try:
     from .extract_geometry_base import BaseGeometryExtractor
@@ -46,8 +46,9 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
     快速几何提取器，使用多分辨率金字塔策略高效提取几何
     """
     
-    def __init__(self, device: torch.device = None, dtype=torch.float16):
+    def __init__(self, device: torch.device = None, dtype=None):
         super().__init__(device)
+        dtype = dtype or default_geometry_dtype(self.device)
         self.dilate = nn.Conv3d(1, 1, 3, padding=1, bias=False, device=self.device, dtype=dtype)
         self.dilate.weight = nn.Parameter(torch.ones(self.dilate.weight.shape, device=self.device, dtype=dtype))
     
@@ -63,7 +64,7 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
         octree_resolution: int = 256,
         rotation_matrix=None,
         mc_mode='mc',
-        dtype=torch.float16,
+        dtype=None,
         min_resolution: int = 95,
         **kwargs
     ) -> trimesh.Trimesh:
@@ -111,8 +112,9 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
             indexing="ij"
         )
 
+        dtype = dtype or default_geometry_dtype(self.device)
         grid_size = np.array(grid_size)
-        xyz_samples = torch.FloatTensor(xyz_samples).to(self.device).half()
+        xyz_samples = torch.FloatTensor(xyz_samples).to(self.device, dtype=dtype)
 
         if mc_level == -1:
             print(f'Training with soft labels, inference with sigmoid and marching cubes level 0.')
@@ -134,7 +136,7 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
                 logits = torch.sigmoid(logits) * 2 - 1
             batch_logits.append(logits)
 
-        grid_logits = torch.cat(batch_logits, dim=1).view((1, grid_size[0], grid_size[1], grid_size[2])).half()
+        grid_logits = torch.cat(batch_logits, dim=1).view((1, grid_size[0], grid_size[1], grid_size[2])).to(dtype)
 
         for octree_depth_now in resolutions[1:]:
             grid_size = np.array([octree_depth_now + 1] * 3)
@@ -177,7 +179,7 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
                     print(f'Training with soft labels, inference with sigmoid and marching cubes level 0.')
                     logits = torch.sigmoid(logits) * 2 - 1
                 batch_logits.append(logits)
-            grid_logits = torch.cat(batch_logits, dim=1).half()
+            grid_logits = torch.cat(batch_logits, dim=1).to(dtype)
             next_logits[nidx] = grid_logits[0].squeeze(-1)
             grid_logits = next_logits.unsqueeze(0)
 
@@ -203,7 +205,8 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
                     except:
                         raise ImportError("Please install diso via `pip install diso`, or set mc_algo to 'mc'")
 
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 grid_logits = grid_logits[0] # -grid_logits[0]
                 grid_logits = grid_logits.to(torch.float32).contiguous()
                 verts, faces = self.dmc(grid_logits, deform=None, return_quads=False, normalize=False)
@@ -216,13 +219,13 @@ class FastGeometryExtractorV2(BaseGeometryExtractor):
             mesh_v_f.append((vertices.astype(np.float32), np.ascontiguousarray(faces)))
             has_surface[0] = True
 
-        except ValueError:
-            traceback.print_exc()
+        except ValueError as e:
+            print(f"Warning: marching cubes did not produce a valid surface: {e}")
             mesh_v_f.append((None, None))
             has_surface[0] = False
 
-        except RuntimeError:
-            traceback.print_exc()
+        except RuntimeError as e:
+            print(f"Warning: marching cubes did not produce a valid surface: {e}")
             mesh_v_f.append((None, None))
             has_surface[0] = False
         

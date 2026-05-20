@@ -11,6 +11,17 @@ from einops import rearrange
 from hy3dshape.models.modules.checkpoint import checkpoint
 
 
+def _scaled_dot_product_attention(q, k, v):
+    if q.device.type == "cuda":
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=True,
+            enable_math=False,
+            enable_mem_efficient=True
+        ):
+            return F.scaled_dot_product_attention(q, k, v)
+    return F.scaled_dot_product_attention(q, k, v)
+
+
 def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
 
@@ -114,13 +125,8 @@ class QKVMultiheadAttention(nn.Module):
         # import pdb; pdb.set_trace()
 
         if self.flash:
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=True,
-                enable_math=False,
-                enable_mem_efficient=True
-            ):
-                q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.heads), (q, k, v))
-                out = F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(bs, n_ctx, -1)
+            q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.heads), (q, k, v))
+            out = _scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(bs, n_ctx, -1)
         else:
             weight = torch.einsum(
                 "bthc,bshc->bhts", q * scale, k * scale
@@ -308,12 +314,8 @@ class QKVMultiheadCrossAttention(nn.Module):
         q = self.q_norm(q)
 
         if self.flash:
-            with torch.backends.cuda.sdp_kernel(enable_flash=True,
-                enable_math=False,
-                enable_mem_efficient=True
-            ):
-                q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.heads), (q, k, v))
-                out = F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(bs, n_ctx, -1)
+            q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.heads), (q, k, v))
+            out = _scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(bs, n_ctx, -1)
         else:
             weight = torch.einsum(
                 "bthc,bshc->bhts", q * scale, k * scale

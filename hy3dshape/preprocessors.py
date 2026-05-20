@@ -39,6 +39,7 @@ from torchvision import transforms
 from transformers import AutoModelForImageSegmentation
 
 from PIL import Image
+from hy3dshape.runtime import resolve_device
 # Optional background removal (commented out by default)
 # from rembg import remove, new_session
 
@@ -162,7 +163,8 @@ class ImageProcessorV2:
 
 
 class BRIARMBG:
-    def __init__(self, path="briaai/RMBG-2.0", device='cuda'):
+    def __init__(self, path="briaai/RMBG-2.0", device='auto'):
+        device = resolve_device(device)
         self.birefnet = AutoModelForImageSegmentation.from_pretrained(
             path, trust_remote_code=True
         )
@@ -189,9 +191,9 @@ class BRIARMBG:
 
 
 class SRRealESRGAN:
-    def __init__(self, path="weights/RealESRGAN_x2.pth", scale=2, download=True, device='cuda'):
+    def __init__(self, path="weights/RealESRGAN_x2.pth", scale=2, download=True, device='auto'):
         from RealESRGAN import RealESRGAN
-        self.device = torch.device(device)
+        self.device = resolve_device(device)
         self.model = RealESRGAN(self.device, scale=scale)
         self.model.load_weights(path, download=download)
 

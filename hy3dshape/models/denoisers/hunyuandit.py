@@ -36,6 +36,17 @@ from .moe_layers import MoEBlock
 from ..utils import logger, synchronize_timer, smart_load_model
 
 
+def _scaled_dot_product_attention(q, k, v):
+    if q.device.type == "cuda":
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=True,
+            enable_math=False,
+            enable_mem_efficient=True
+        ):
+            return F.scaled_dot_product_attention(q, k, v)
+    return F.scaled_dot_product_attention(q, k, v)
+
+
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -212,26 +223,13 @@ class CrossAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=True,
-            enable_math=False,
-            enable_mem_efficient=True
-        ):
-            q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads), (q, k, v))
-            context = F.scaled_dot_product_attention(
-                q, k, v
-            ).transpose(1, 2).reshape(b, s1, -1)
+        q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads), (q, k, v))
+        context = _scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(b, s1, -1)
 
         if self.with_dca:
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=True,
-                enable_math=False,
-                enable_mem_efficient=True
-            ):
-                k_dca, v_dca = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads),
-                                   (k_dca, v_dca))
-                context_dca = F.scaled_dot_product_attention(
-                    q, k_dca, v_dca).transpose(1, 2).reshape(b, s1, -1)
+            k_dca, v_dca = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads),
+                               (k_dca, v_dca))
+            context_dca = _scaled_dot_product_attention(q, k_dca, v_dca).transpose(1, 2).reshape(b, s1, -1)
 
             context = context + self.dca_weight * context_dca
 
@@ -289,13 +287,8 @@ class Attention(nn.Module):
         q = self.q_norm(q)  # [b, h, s, d]
         k = self.k_norm(k)  # [b, h, s, d]
 
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=True,
-            enable_math=False,
-            enable_mem_efficient=True
-        ):
-            x = F.scaled_dot_product_attention(q, k, v)
-            x = x.transpose(1, 2).reshape(B, N, -1)
+        x = _scaled_dot_product_attention(q, k, v)
+        x = x.transpose(1, 2).reshape(B, N, -1)
 
         x = self.out_proj(x)
         return x

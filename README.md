@@ -1,9 +1,34 @@
+# Hunyuan3D-Omni-MLX
+
+Optimized Apple Silicon / MLX port of
+[Tencent Hunyuan3D-Omni](https://github.com/Tencent-Hunyuan/Hunyuan3D-Omni).
+
+This fork focuses on running Hunyuan3D-Omni efficiently on Apple Silicon. The
+default `--device mlx` path uses native MLX for the DiT denoiser, Euler sampler,
+latent initialization, ShapeVAE latent decoder, and neural geometry queries. It
+keeps DINO conditioning on PyTorch/MPS by default because that measured faster
+than the current native MLX DINO implementation in smoke benchmarks.
+
+Smoke benchmark on Apple Silicon, bbox demo, 5 denoising steps,
+`octree_resolution=128`:
+
+| Backend | Time | Notes |
+|---------|------|-------|
+| PyTorch/MPS | 73.76s | Original Apple backend |
+| `--device mlx` | 59.82s | Default optimized MLX path |
+| `--device mlx --native_mlx_dino` | 61.97s | Experimental all-MLX conditioning |
+
+The original Tencent model weights, paper, license, and upstream project links
+are preserved below.
 
 <p align="center">
   <img src="assets/omni_teaser.png">
 </p>
 
 <div align="center">
+  <img src=https://img.shields.io/badge/Apple%20Silicon-MLX-111111.svg?logo=apple height=22px>
+  <img src=https://img.shields.io/badge/Optimized%20Backend-native%20MLX-2f7d32.svg height=22px>
+  <a href=https://github.com/Tencent-Hunyuan/Hunyuan3D-Omni target="_blank"><img src=https://img.shields.io/badge/Upstream-Tencent%20Hunyuan3D--Omni-555555.svg?logo=github height=22px></a>
   <a href=https://3d.hunyuan.tencent.com target="_blank"><img src=https://img.shields.io/badge/Official%20Site-333399.svg?logo=homepage height=22px></a>
   <a href=https://huggingface.co/tencent/Hunyuan3D-Omni target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20Models-d96902.svg height=22px></a>
   <a href=https://3d-models.hunyuan.tencent.com/ target="_blank"><img src= https://img.shields.io/badge/Page-bb8a2e.svg?logo=github height=22px></a>
@@ -19,7 +44,7 @@
 [//]: # (  <a href="#"><img alt="PyPI - Downloads" src="https://img.shields.io/pypi/v/mulankit?logo=pypi"  height=22px></a>)
 <br>
 
-# Hunyuan3D-Omni
+## Upstream Project
 
 Hunyuan3D-Omni is a unified framework for the controllable generation of 3D assets, which inherits the structure of Hunyuan3D 2.1. In contrast, Hunyuan3D-Omni constructs a unified control encoder to introduce additional control signals, including point cloud, voxel, skeleton, and bounding box.
 
@@ -164,13 +189,3 @@ If you use this code in your research, please cite:
     primaryClass={cs.CV}
 }
 ```
-
-## Star History
-
-<a href="https://star-history.com/#Tencent-Hunyuan/Hunyuan3D-Omni&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Tencent-Hunyuan/Hunyuan3D-Omni&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Tencent-Hunyuan/Hunyuan3D-Omni&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Tencent-Hunyuan/Hunyuan3D-Omni&type=Date" />
- </picture>
-</a>
